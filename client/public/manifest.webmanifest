@@ -1,0 +1,9 @@
+{
+  "name": "Build On Works",
+  "short_name": "Build On",
+  "description": "인력소장과 인부를 위한 모바일 현장 운영 서비스",
+  "display": "standalone",
+  "start_url": "/",
+  "background_color": "#f7f5f0",
+  "theme_color": "#173d38"
+}

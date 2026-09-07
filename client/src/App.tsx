@@ -1,42 +1,26 @@
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { trpc } from "@/lib/trpc";
+import ManagerWorkspace from "@/pages/ManagerWorkspace";
+import Onboarding from "@/pages/Onboarding";
+import WorkerWorkspace from "@/pages/WorkerWorkspace";
+import { Loader2 } from "lucide-react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
 
-function Router() {
-  // make sure to consider if you need authentication for certain routes
-  return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
-  );
+function AppContent() {
+  const { user, loading, isAuthenticated, logout } = useAuth();
+  const viewer = trpc.buildOnWorks.account.viewer.useQuery(undefined, { enabled: isAuthenticated });
+
+  if (loading || (isAuthenticated && viewer.isLoading)) return <div className="grid min-h-screen place-items-center bg-[#173d38]"><Loader2 className="h-7 w-7 animate-spin text-white" /></div>;
+  if (!isAuthenticated || !viewer.data?.account.accountRole) return <Onboarding onComplete={() => viewer.refetch()} />;
+
+  const name = viewer.data.account.name || user?.name || "현장 사용자";
+  if (viewer.data.account.accountRole === "MANAGER") return <ManagerWorkspace userName={name} onLogout={logout} />;
+  return <WorkerWorkspace userName={name} onLogout={logout} />;
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
-
-function App() {
-  return (
-    <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
-  );
+export default function App() {
+  return <ErrorBoundary><ThemeProvider defaultTheme="light"><TooltipProvider><Toaster richColors position="top-center" /><AppContent /></TooltipProvider></ThemeProvider></ErrorBoundary>;
 }
-
-export default App;
