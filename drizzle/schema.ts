@@ -12,6 +12,7 @@ import {
 
 export const accountRoles = ["MANAGER", "WORKER"] as const;
 export const workerStatuses = ["UNAFFILIATED", "PENDING", "ACTIVE", "REJECTED", "INACTIVE"] as const;
+export const membershipStatuses = ["PENDING", "ACTIVE", "REJECTED", "INACTIVE"] as const;
 export const jobStatuses = ["RECRUITING", "CLOSED", "CANCELED"] as const;
 export const assignmentStatuses = ["PENDING", "ASSIGNED", "REJECTED", "CANCELED", "COMPLETED"] as const;
 export const paymentStatuses = ["PENDING", "PAID", "CANCELED"] as const;
@@ -70,6 +71,26 @@ export const workerProfiles = mysqlTable(
   table => ({
     userUnique: uniqueIndex("worker_profiles_user_unique").on(table.userId),
     agencyStatusIndex: index("worker_profiles_agency_status_idx").on(table.agencyId, table.status),
+  })
+);
+
+/** A worker can independently request and hold membership at multiple agencies. */
+export const workerAgencyMemberships = mysqlTable(
+  "worker_agency_memberships",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    workerId: int("workerId").notNull().references(() => workerProfiles.id),
+    agencyId: int("agencyId").notNull().references(() => agencies.id),
+    status: mysqlEnum("status", membershipStatuses).default("PENDING").notNull(),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    respondedAt: timestamp("respondedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    workerAgencyUnique: uniqueIndex("worker_agency_memberships_unique").on(table.workerId, table.agencyId),
+    agencyStatusIndex: index("worker_agency_memberships_agency_status_idx").on(table.agencyId, table.status),
+    workerStatusIndex: index("worker_agency_memberships_worker_status_idx").on(table.workerId, table.status),
   })
 );
 
@@ -158,6 +179,7 @@ export const paymentRecords = mysqlTable(
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type WorkerProfile = typeof workerProfiles.$inferSelect;
+export type WorkerAgencyMembership = typeof workerAgencyMemberships.$inferSelect;
 export type Agency = typeof agencies.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type JobAssignment = typeof jobAssignments.$inferSelect;

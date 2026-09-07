@@ -8,11 +8,13 @@ import {
   jobs,
   paymentRecords,
   users,
+  workerAgencyMemberships,
   workerProfiles,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { toManagerWorkerDetail } from "../workerDetail";
+import { canApplyToAgency } from "../../shared/membership";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 
@@ -70,6 +72,7 @@ export const buildOnWorksRouter = router({
       const { db, account } = await getAccount(ctx.user.id);
       const [profile] = await db.select().from(workerProfiles).where(eq(workerProfiles.userId, ctx.user.id)).limit(1);
       const [agency] = await db.select().from(agencies).where(and(eq(agencies.managerId, ctx.user.id), isNull(agencies.deletedAt))).limit(1);
+      const memberships = profile ? await db.select({ membership: workerAgencyMemberships, agency: agencies }).from(workerAgencyMemberships).innerJoin(agencies, eq(workerAgencyMemberships.agencyId, agencies.id)).where(eq(workerAgencyMemberships.workerId, profile.id)).orderBy(desc(workerAgencyMemberships.updatedAt)) : [];
       return {
         account: {
           id: account.id,
@@ -80,6 +83,7 @@ export const buildOnWorksRouter = router({
         },
         profile: profile ?? null,
         managedAgency: agency ?? null,
+        memberships,
       };
     }),
     setup: protectedProcedure
@@ -130,8 +134,8 @@ export const buildOnWorksRouter = router({
       if (account.accountRole === "MANAGER") {
         const [, , agency] = [null, null, (await managerContext(ctx.user.id)).agency];
         if (!agency) return { role: "MANAGER" as const, needsAgency: true, agency: null, metrics: null };
-        const [activeWorkers] = await db.select({ value: count() }).from(workerProfiles).where(and(eq(workerProfiles.agencyId, agency.id), eq(workerProfiles.status, "ACTIVE")));
-        const [pendingMembers] = await db.select({ value: count() }).from(workerProfiles).where(and(eq(workerProfiles.agencyId, agency.id), eq(workerProfiles.status, "PENDING")));
+        const [activeWorkers] = await db.select({ value: count() }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.agencyId, agency.id), eq(workerAgencyMemberships.status, "ACTIVE")));
+        const [pendingMembers] = await db.select({ value: count() }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.agencyId, agency.id), eq(workerAgencyMemberships.status, "PENDING")));
         const [activeJobs] = await db.select({ value: count() }).from(jobs).where(and(eq(jobs.agencyId, agency.id), eq(jobs.status, "RECRUITING")));
         const [paidThisMonth] = await db.select({ value: sql<number>`coalesce(sum(${paymentRecords.amount}), 0)` }).from(paymentRecords).where(and(eq(paymentRecords.agencyId, agency.id), eq(paymentRecords.status, "PAID")));
         return {
@@ -145,13 +149,13 @@ export const buildOnWorksRouter = router({
       const [pendingAssignments] = await db.select({ value: count() }).from(jobAssignments).where(and(eq(jobAssignments.workerId, profile.id), eq(jobAssignments.status, "PENDING")));
       const [activeAssignments] = await db.select({ value: count() }).from(jobAssignments).where(and(eq(jobAssignments.workerId, profile.id), eq(jobAssignments.status, "ASSIGNED")));
       const [totalWages] = await db.select({ value: sql<number>`coalesce(sum(${paymentRecords.amount}), 0)` }).from(paymentRecords).where(and(eq(paymentRecords.workerId, profile.id), sql`${paymentRecords.status} in ('PENDING', 'PAID')`));
-      const [agency] = profile.agencyId ? await db.select().from(agencies).where(eq(agencies.id, profile.agencyId)).limit(1) : [];
+      const memberships = await db.select({ membership: workerAgencyMemberships, agency: agencies }).from(workerAgencyMemberships).innerJoin(agencies, eq(workerAgencyMemberships.agencyId, agencies.id)).where(eq(workerAgencyMemberships.workerId, profile.id)).orderBy(desc(workerAgencyMemberships.updatedAt));
       return {
         role: "WORKER" as const,
-        needsAgency: profile.status !== "ACTIVE",
+        needsAgency: memberships.filter(row => row.membership.status === "ACTIVE").length === 0,
         profile,
-        agency: agency ?? null,
-        metrics: { pendingAssignments: numberFrom(pendingAssignments?.value), activeAssignments: numberFrom(activeAssignments?.value), totalWages: numberFrom(totalWages?.value) },
+        memberships,
+        metrics: { pendingAssignments: numberFrom(pendingAssignments?.value), activeAssignments: numberFrom(activeAssignments?.value), totalWages: numberFrom(totalWages?.value), activeMemberships: memberships.filter(row => row.membership.status === "ACTIVE").length },
       };
     }),
   }),
@@ -177,7 +181,7 @@ export const buildOnWorksRouter = router({
     deactivate: protectedProcedure.mutation(async ({ ctx }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) throw missing("운영 중인 인력소를 찾을 수 없습니다.");
-      const [activeWorker] = await db.select({ value: count() }).from(workerProfiles).where(and(eq(workerProfiles.agencyId, agency.id), sql`${workerProfiles.status} in ('PENDING', 'ACTIVE')`));
+      const [activeWorker] = await db.select({ value: count() }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.agencyId, agency.id), sql`${workerAgencyMemberships.status} in ('PENDING', 'ACTIVE')`));
       const [activeJob] = await db.select({ value: count() }).from(jobs).where(and(eq(jobs.agencyId, agency.id), sql`${jobs.status} in ('RECRUITING', 'CLOSED')`));
       if (numberFrom(activeWorker?.value) > 0 || numberFrom(activeJob?.value) > 0) throw invalid("소속 인부와 진행·마감 일감이 없는 경우에만 인력소 운영을 중지할 수 있습니다.");
       await db.update(agencies).set({ deletedAt: new Date() }).where(eq(agencies.id, agency.id));
@@ -185,24 +189,30 @@ export const buildOnWorksRouter = router({
     }),
     requestMembership: protectedProcedure.input(z.object({ agencyId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const { db, profile } = await workerContext(ctx.user.id);
-      if (profile.status === "ACTIVE") throw invalid("이미 소속 인력소가 있습니다.");
       const [agency] = await db.select().from(agencies).where(and(eq(agencies.id, input.agencyId), isNull(agencies.deletedAt))).limit(1);
       if (!agency) throw missing("선택한 인력소를 찾을 수 없습니다.");
-      await db.update(workerProfiles).set({ agencyId: input.agencyId, status: "PENDING" }).where(eq(workerProfiles.id, profile.id));
+      const [existing] = await db.select().from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.workerId, profile.id), eq(workerAgencyMemberships.agencyId, input.agencyId))).limit(1);
+      if (existing?.status === "ACTIVE") throw invalid("이미 가입 승인된 인력소입니다.");
+      if (existing?.status === "PENDING") throw invalid("해당 인력소의 가입 승인을 기다리고 있습니다.");
+      if (existing) {
+        await db.update(workerAgencyMemberships).set({ status: "PENDING", requestedAt: new Date(), respondedAt: null }).where(eq(workerAgencyMemberships.id, existing.id));
+      } else {
+        await db.insert(workerAgencyMemberships).values({ workerId: profile.id, agencyId: input.agencyId, status: "PENDING" });
+      }
       return { success: true };
     }),
     members: protectedProcedure.query(async ({ ctx }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) return [];
-      const rows = await db.select({ profile: workerProfiles, user: users }).from(workerProfiles).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(workerProfiles.agencyId, agency.id)).orderBy(desc(workerProfiles.updatedAt));
-      return rows.map(toManagerWorkerDetail);
+      const rows = await db.select({ membership: workerAgencyMemberships, profile: workerProfiles, user: users }).from(workerAgencyMemberships).innerJoin(workerProfiles, eq(workerAgencyMemberships.workerId, workerProfiles.id)).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(workerAgencyMemberships.agencyId, agency.id)).orderBy(desc(workerAgencyMemberships.updatedAt));
+      return rows.map(row => ({ membership: row.membership, ...toManagerWorkerDetail(row) }));
     }),
-    decideMembership: protectedProcedure.input(z.object({ profileId: z.number().int().positive(), approved: z.boolean() })).mutation(async ({ ctx, input }) => {
+    decideMembership: protectedProcedure.input(z.object({ membershipId: z.number().int().positive(), approved: z.boolean() })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) throw missing("먼저 인력소를 등록해 주세요.");
-      const [profile] = await db.select().from(workerProfiles).where(and(eq(workerProfiles.id, input.profileId), eq(workerProfiles.agencyId, agency.id), eq(workerProfiles.status, "PENDING"))).limit(1);
-      if (!profile) throw missing("승인 대기 중인 인부를 찾을 수 없습니다.");
-      await db.update(workerProfiles).set(input.approved ? { status: "ACTIVE" } : { status: "REJECTED", agencyId: null }).where(eq(workerProfiles.id, profile.id));
+      const [membership] = await db.select().from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.id, input.membershipId), eq(workerAgencyMemberships.agencyId, agency.id), eq(workerAgencyMemberships.status, "PENDING"))).limit(1);
+      if (!membership) throw missing("승인 대기 중인 인부 가입 요청을 찾을 수 없습니다.");
+      await db.update(workerAgencyMemberships).set({ status: input.approved ? "ACTIVE" : "REJECTED", respondedAt: new Date() }).where(eq(workerAgencyMemberships.id, membership.id));
       return { success: true };
     }),
   }),
@@ -221,7 +231,11 @@ export const buildOnWorksRouter = router({
       if (input?.agencyId) filters.push(eq(jobs.agencyId, input.agencyId));
       const rows = await db.select({ job: jobs, agency: agencies }).from(jobs).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(and(...filters)).orderBy(jobs.jobDate);
       const assignments = await db.select().from(jobAssignments).where(eq(jobAssignments.workerId, profile.id));
-      return Promise.all(rows.map(async row => ({ ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, assignedCount: await assignmentCapacity(db, row.job.id) })));
+      const memberships = await db.select().from(workerAgencyMemberships).where(eq(workerAgencyMemberships.workerId, profile.id));
+      return Promise.all(rows.map(async row => {
+        const membership = memberships.find(item => item.agencyId === row.job.agencyId) ?? null;
+        return { ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, membership, canApply: canApplyToAgency(membership?.status), assignedCount: await assignmentCapacity(db, row.job.id) };
+      }));
     }),
     workerAssignments: protectedProcedure.query(async ({ ctx }) => {
       const { db, profile } = await workerContext(ctx.user.id);
@@ -251,10 +265,10 @@ export const buildOnWorksRouter = router({
     }),
     submitApplication: protectedProcedure.input(z.object({ jobId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const { db, profile } = await workerContext(ctx.user.id);
-      if (profile.status !== "ACTIVE" || !profile.agencyId) throw forbidden("인력소 승인이 완료된 뒤 일감을 신청할 수 있습니다.");
       const [job] = await db.select().from(jobs).where(and(eq(jobs.id, input.jobId), eq(jobs.status, "RECRUITING"))).limit(1);
       if (!job) throw missing("모집 중인 일감을 찾을 수 없습니다.");
-      if (job.agencyId !== profile.agencyId) throw forbidden("소속 인력소의 일감만 신청할 수 있습니다.");
+      const [membership] = await db.select().from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.workerId, profile.id), eq(workerAgencyMemberships.agencyId, job.agencyId), eq(workerAgencyMemberships.status, "ACTIVE"))).limit(1);
+      if (!membership) throw forbidden("해당 인력소의 가입 승인이 완료된 뒤 일감을 신청할 수 있습니다.");
       if ((await assignmentCapacity(db, job.id)) >= job.requiredWorkers) throw invalid("모집 인원이 모두 찼습니다.");
       const [existing] = await db.select().from(jobAssignments).where(and(eq(jobAssignments.jobId, job.id), eq(jobAssignments.workerId, profile.id))).limit(1);
       if (existing) throw invalid("이미 신청했거나 처리된 일감입니다.");
