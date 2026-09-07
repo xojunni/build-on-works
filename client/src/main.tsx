@@ -5,20 +5,17 @@ import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
-import { startLogin } from "./const";
 import "./index.css";
+import { installResizeObserverGuard } from "./lib/resizeObserverGuard";
 
 const queryClient = new QueryClient();
 
+installResizeObserverGuard();
+
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
-  if (typeof window === "undefined") return;
-
-  const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
-
-  if (!isUnauthorized) return;
-
-  startLogin();
+  if (error.message !== UNAUTHED_ERR_MSG) return;
+  // Phone-password auth is rendered by App instead of redirecting to OAuth.
 };
 
 queryClient.getQueryCache().subscribe(event => {
