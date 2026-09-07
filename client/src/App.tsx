@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
+import { canAccessWorkspace } from "@shared/sessionAccess";
 import ManagerWorkspace from "@/pages/ManagerWorkspace";
 import PhoneAuth from "@/pages/PhoneAuth";
 import WorkerWorkspace from "@/pages/WorkerWorkspace";
@@ -11,12 +12,12 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 
 function AppContent() {
   const { user, loading, isAuthenticated, logout } = useAuth();
-  const viewer = trpc.buildOnWorks.account.viewer.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const hasPhoneSession = isAuthenticated && canAccessWorkspace(user);
+  const viewer = trpc.buildOnWorks.account.viewer.useQuery(undefined, { enabled: hasPhoneSession, retry: false });
 
-  if (loading || (isAuthenticated && viewer.isLoading)) return <div className="grid min-h-screen place-items-center bg-[#173d38]"><Loader2 className="h-7 w-7 animate-spin text-white" /></div>;
+  if (loading || (hasPhoneSession && viewer.isLoading)) return <div className="grid min-h-screen place-items-center bg-[#173d38]"><Loader2 className="h-7 w-7 animate-spin text-white" /></div>;
   const authAccount = viewer.data?.account;
-  const hasPhoneSession = authAccount?.loginMethod === "phone-password" && Boolean(authAccount.accountRole);
-  if (!isAuthenticated || !hasPhoneSession || !authAccount) return <PhoneAuth />;
+  if (!hasPhoneSession || !authAccount) return <PhoneAuth />;
 
   const name = authAccount.name || user?.name || "현장 사용자";
   if (authAccount.accountRole === "MANAGER") return <ManagerWorkspace userName={name} onLogout={logout} />;
