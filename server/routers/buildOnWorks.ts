@@ -32,6 +32,7 @@ async function getAccount(userId: number) {
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "데이터베이스 연결을 준비할 수 없습니다." });
   const [account] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!account) throw missing("사용자 계정을 찾을 수 없습니다.");
+  if (account.loginMethod !== "phone-password" || !account.passwordHash) throw forbidden("전화번호와 비밀번호로 로그인해 주세요.");
   return { db, account };
 }
 
@@ -68,7 +69,17 @@ export const buildOnWorksRouter = router({
       const { db, account } = await getAccount(ctx.user.id);
       const [profile] = await db.select().from(workerProfiles).where(eq(workerProfiles.userId, ctx.user.id)).limit(1);
       const [agency] = await db.select().from(agencies).where(and(eq(agencies.managerId, ctx.user.id), isNull(agencies.deletedAt))).limit(1);
-      return { account, profile: profile ?? null, managedAgency: agency ?? null };
+      return {
+        account: {
+          id: account.id,
+          name: account.name,
+          phone: account.phone,
+          accountRole: account.accountRole,
+          loginMethod: account.loginMethod,
+        },
+        profile: profile ?? null,
+        managedAgency: agency ?? null,
+      };
     }),
     setup: protectedProcedure
       .input(z.object({
