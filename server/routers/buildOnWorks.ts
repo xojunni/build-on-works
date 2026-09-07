@@ -12,6 +12,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
+import { toManagerWorkerDetail } from "../workerDetail";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 
@@ -193,7 +194,8 @@ export const buildOnWorksRouter = router({
     members: protectedProcedure.query(async ({ ctx }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) return [];
-      return db.select({ profile: workerProfiles, user: users }).from(workerProfiles).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(workerProfiles.agencyId, agency.id)).orderBy(desc(workerProfiles.updatedAt));
+      const rows = await db.select({ profile: workerProfiles, user: users }).from(workerProfiles).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(workerProfiles.agencyId, agency.id)).orderBy(desc(workerProfiles.updatedAt));
+      return rows.map(toManagerWorkerDetail);
     }),
     decideMembership: protectedProcedure.input(z.object({ profileId: z.number().int().positive(), approved: z.boolean() })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
@@ -269,7 +271,8 @@ export const buildOnWorksRouter = router({
       if (!agency) return [];
       const [job] = await db.select().from(jobs).where(and(eq(jobs.id, input.jobId), eq(jobs.agencyId, agency.id))).limit(1);
       if (!job) throw missing("일감을 찾을 수 없습니다.");
-      return db.select({ assignment: jobAssignments, profile: workerProfiles, user: users }).from(jobAssignments).innerJoin(workerProfiles, eq(jobAssignments.workerId, workerProfiles.id)).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(jobAssignments.jobId, job.id)).orderBy(desc(jobAssignments.requestedAt));
+      const rows = await db.select({ assignment: jobAssignments, profile: workerProfiles, user: users }).from(jobAssignments).innerJoin(workerProfiles, eq(jobAssignments.workerId, workerProfiles.id)).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(jobAssignments.jobId, job.id)).orderBy(desc(jobAssignments.requestedAt));
+      return rows.map(row => ({ assignment: row.assignment, ...toManagerWorkerDetail(row) }));
     }),
     decideApplication: protectedProcedure.input(z.object({ assignmentId: z.number().int().positive(), approved: z.boolean() })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
