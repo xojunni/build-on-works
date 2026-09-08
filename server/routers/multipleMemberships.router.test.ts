@@ -30,7 +30,7 @@ function context() {
 describe("multiple agency memberships", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("shows recruiting jobs from every agency even when the worker has no approved membership", async () => {
+  it("shows recruiting jobs from every agency and marks them directly applicable", async () => {
     const job = { id: 31, agencyId: 71, title: "철거 보조", status: "RECRUITING" };
     const agency = { id: 71, name: "새 인력소", region: "청주시" };
     const select = vi.fn()
@@ -38,25 +38,40 @@ describe("multiple agency memberships", () => {
       .mockReturnValueOnce(selectResult([workerProfile()]))
       .mockReturnValueOnce(selectResult([{ job, agency }]))
       .mockReturnValueOnce(selectResult([]))
-      .mockReturnValueOnce(selectResult([]))
       .mockReturnValueOnce(selectResult([{ value: 0 }]));
     mocks.getDb.mockResolvedValue({ select });
 
     const result = await buildOnWorksRouter.createCaller(context()).jobs.discover();
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ job, agency, membership: null, canApply: false, assignedCount: 0 });
+    expect(result[0]).toMatchObject({ job, agency, canApply: true, assignedCount: 0 });
   });
 
-  it("rejects a job application when that job's agency has not approved the worker", async () => {
+  it("allows a direct job application without querying an agency membership", async () => {
+    const values = vi.fn().mockResolvedValue(undefined);
     const select = vi.fn()
       .mockReturnValueOnce(selectResult([account()]))
       .mockReturnValueOnce(selectResult([workerProfile()]))
       .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING" }]))
+      .mockReturnValueOnce(selectResult([{ value: 0 }]))
       .mockReturnValueOnce(selectResult([]));
-    mocks.getDb.mockResolvedValue({ select });
+    mocks.getDb.mockResolvedValue({ select, insert: vi.fn(() => ({ values })) });
 
-    await expect(buildOnWorksRouter.createCaller(context()).jobs.submitApplication({ jobId: 31 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(buildOnWorksRouter.createCaller(context()).jobs.submitApplication({ jobId: 31 })).resolves.toEqual({ success: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ jobId: 31, workerId: 21, status: "PENDING" }));
+    expect(select).toHaveBeenCalledTimes(5);
+  });
+
+  it("blocks a duplicate direct application for the same job", async () => {
+    const select = vi.fn()
+      .mockReturnValueOnce(selectResult([account()]))
+      .mockReturnValueOnce(selectResult([workerProfile()]))
+      .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING" }]))
+      .mockReturnValueOnce(selectResult([{ value: 0 }]))
+      .mockReturnValueOnce(selectResult([{ id: 90, jobId: 31, workerId: 21, status: "PENDING" }]));
+    mocks.getDb.mockResolvedValue({ select, insert: vi.fn() });
+
+    await expect(buildOnWorksRouter.createCaller(context()).jobs.submitApplication({ jobId: 31 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "이미 신청했거나 처리된 일감입니다." });
   });
 
   it("creates a separate membership request for another agency without altering the legacy profile", async () => {

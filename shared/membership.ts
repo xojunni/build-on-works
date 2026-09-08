@@ -1,6 +1,6 @@
 export type MembershipStatus = "PENDING" | "ACTIVE" | "REJECTED" | "INACTIVE";
 
-export function canApplyToAgency(status: MembershipStatus | null | undefined) {
+export function isActiveMembership(status: MembershipStatus | null | undefined) {
   return status === "ACTIVE";
 }
 

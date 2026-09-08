@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { canApplyToAgency, membershipLabel } from "../shared/membership";
+import { isActiveMembership, membershipLabel } from "../shared/membership";
 
 describe("multiple agency membership rules", () => {
-  it("allows an application only for the agency that approved the worker", () => {
-    expect(canApplyToAgency("ACTIVE")).toBe(true);
-    expect(canApplyToAgency("PENDING")).toBe(false);
-    expect(canApplyToAgency("REJECTED")).toBe(false);
-    expect(canApplyToAgency(null)).toBe(false);
+  it("identifies an approved agency membership without using it as a job application gate", () => {
+    expect(isActiveMembership("ACTIVE")).toBe(true);
+    expect(isActiveMembership("PENDING")).toBe(false);
+    expect(isActiveMembership("REJECTED")).toBe(false);
+    expect(isActiveMembership(null)).toBe(false);
   });
 
   it("uses distinct Korean labels for independent membership states", () => {

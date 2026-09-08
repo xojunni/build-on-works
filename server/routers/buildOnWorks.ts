@@ -14,7 +14,6 @@ import {
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { toManagerWorkerDetail } from "../workerDetail";
-import { canApplyToAgency } from "../../shared/membership";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 
@@ -231,10 +230,8 @@ export const buildOnWorksRouter = router({
       if (input?.agencyId) filters.push(eq(jobs.agencyId, input.agencyId));
       const rows = await db.select({ job: jobs, agency: agencies }).from(jobs).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(and(...filters)).orderBy(jobs.jobDate);
       const assignments = await db.select().from(jobAssignments).where(eq(jobAssignments.workerId, profile.id));
-      const memberships = await db.select().from(workerAgencyMemberships).where(eq(workerAgencyMemberships.workerId, profile.id));
       return Promise.all(rows.map(async row => {
-        const membership = memberships.find(item => item.agencyId === row.job.agencyId) ?? null;
-        return { ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, membership, canApply: canApplyToAgency(membership?.status), assignedCount: await assignmentCapacity(db, row.job.id) };
+        return { ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, canApply: true, assignedCount: await assignmentCapacity(db, row.job.id) };
       }));
     }),
     workerAssignments: protectedProcedure.query(async ({ ctx }) => {
@@ -267,8 +264,6 @@ export const buildOnWorksRouter = router({
       const { db, profile } = await workerContext(ctx.user.id);
       const [job] = await db.select().from(jobs).where(and(eq(jobs.id, input.jobId), eq(jobs.status, "RECRUITING"))).limit(1);
       if (!job) throw missing("모집 중인 일감을 찾을 수 없습니다.");
-      const [membership] = await db.select().from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.workerId, profile.id), eq(workerAgencyMemberships.agencyId, job.agencyId), eq(workerAgencyMemberships.status, "ACTIVE"))).limit(1);
-      if (!membership) throw forbidden("해당 인력소의 가입 승인이 완료된 뒤 일감을 신청할 수 있습니다.");
       if ((await assignmentCapacity(db, job.id)) >= job.requiredWorkers) throw invalid("모집 인원이 모두 찼습니다.");
       const [existing] = await db.select().from(jobAssignments).where(and(eq(jobAssignments.jobId, job.id), eq(jobAssignments.workerId, profile.id))).limit(1);
       if (existing) throw invalid("이미 신청했거나 처리된 일감입니다.");
