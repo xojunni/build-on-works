@@ -14,7 +14,6 @@ function AppContent() {
   const { user, loading, isAuthenticated, logout } = useAuth();
   const hasPhoneSession = isAuthenticated && canAccessWorkspace(user);
   const viewer = trpc.buildOnWorks.account.viewer.useQuery(undefined, { enabled: hasPhoneSession, retry: false });
-
   if (loading || (hasPhoneSession && viewer.isLoading)) return <div className="grid min-h-screen place-items-center bg-[#173d38]"><Loader2 className="h-7 w-7 animate-spin text-white" /></div>;
   const authAccount = viewer.data?.account;
   if (!hasPhoneSession || !authAccount) return <PhoneAuth />;

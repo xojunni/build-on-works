@@ -14,6 +14,7 @@ import {
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { toManagerWorkerDetail } from "../workerDetail";
+import { summarizeWorkHistory } from "../workHistory";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 
@@ -63,6 +64,22 @@ async function assignmentCapacity(db: NonNullable<Awaited<ReturnType<typeof getD
     .from(jobAssignments)
     .where(and(eq(jobAssignments.jobId, jobId), eq(jobAssignments.status, "ASSIGNED")));
   return numberFrom(row?.value);
+}
+
+async function completedWorkHistory(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, workerId: number) {
+  const rows = await db
+    .select({ assignment: jobAssignments, job: jobs, agency: agencies })
+    .from(jobAssignments)
+    .innerJoin(jobs, eq(jobAssignments.jobId, jobs.id))
+    .innerJoin(agencies, eq(jobs.agencyId, agencies.id))
+    .where(and(eq(jobAssignments.workerId, workerId), eq(jobAssignments.status, "COMPLETED")));
+  return summarizeWorkHistory(rows.map(row => ({
+    assignmentId: row.assignment.id,
+    status: row.assignment.status,
+    completedAt: row.assignment.completedAt,
+    job: { id: row.job.id, title: row.job.title, jobDate: row.job.jobDate, agencyId: row.job.agencyId },
+    agency: { id: row.agency.id, name: row.agency.name, region: row.agency.region },
+  })));
 }
 
 export const buildOnWorksRouter = router({
@@ -292,6 +309,22 @@ export const buildOnWorksRouter = router({
       await db.update(jobAssignments).set({ status: input.approved ? "ASSIGNED" : "REJECTED", respondedAt: new Date() }).where(eq(jobAssignments.id, row.assignment.id));
       if (input.approved && (await assignmentCapacity(db, row.job.id)) >= row.job.requiredWorkers) await db.update(jobs).set({ status: "CLOSED" }).where(eq(jobs.id, row.job.id));
       return { success: true };
+    }),
+  }),
+
+  workHistory: router({
+    mine: protectedProcedure.query(async ({ ctx }) => {
+      const { db, profile } = await workerContext(ctx.user.id);
+      return completedWorkHistory(db, profile.id);
+    }),
+    managerWorker: protectedProcedure.input(z.object({ workerId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const { db, agency } = await managerContext(ctx.user.id);
+      if (!agency) throw missing("먼저 인력소를 등록해 주세요.");
+      const [membership] = await db.select({ id: workerAgencyMemberships.id }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.workerId, input.workerId), eq(workerAgencyMemberships.agencyId, agency.id))).limit(1);
+      const [application] = await db.select({ id: jobAssignments.id }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).where(and(eq(jobAssignments.workerId, input.workerId), eq(jobs.agencyId, agency.id))).limit(1);
+      if (!membership && !application) throw forbidden("신청 또는 가입 요청 관계가 있는 인부의 근무 이력만 조회할 수 있습니다.");
+      const history = await completedWorkHistory(db, input.workerId);
+      return { ...history, currentAgencyCompleted: history.recentJobs.filter(job => job.agency.id === agency.id).length };
     }),
   }),
 
