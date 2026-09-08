@@ -15,8 +15,29 @@ import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { toManagerWorkerDetail } from "../workerDetail";
 import { summarizeWorkHistory } from "../workHistory";
+import { makeRequest, type GeocodingResult } from "../_core/map";
+import { verifyWorksiteGeofence } from "../geofence";
+import { koreanWorkDate } from "../attendanceDate";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
+const coordinateInput = {
+  latitude: z.number().finite().min(-90).max(90).optional(),
+  longitude: z.number().finite().min(-180).max(180).optional(),
+  accuracyMeters: z.number().finite().min(0).max(10_000).optional(),
+};
+
+function positionFromInput(input: { latitude?: number; longitude?: number }) {
+  if (input.latitude === undefined && input.longitude === undefined) return null;
+  if (input.latitude === undefined || input.longitude === undefined) throw invalid("현재 위치 정보가 올바르지 않습니다.");
+  return { latitude: input.latitude, longitude: input.longitude };
+}
+
+function locationVerification(job: typeof jobs.$inferSelect, input: { latitude?: number; longitude?: number }) {
+  const verification = verifyWorksiteGeofence(job, positionFromInput(input));
+  if (verification.required && verification.distanceMeters === null) throw invalid("현장 위치 인증을 위해 현재 위치 권한을 허용해 주세요.");
+  if (verification.required && !verification.withinRange) throw invalid(`현장 반경 ${job.geofenceRadiusMeters}m 밖입니다. 현장 근처에서 다시 시도해 주세요.`);
+  return verification;
+}
 
 function forbidden(message = "이 작업을 수행할 권한이 없습니다.") {
   return new TRPCError({ code: "FORBIDDEN", message });
@@ -234,6 +255,13 @@ export const buildOnWorksRouter = router({
   }),
 
   jobs: router({
+    geocodeAddress: protectedProcedure.input(z.object({ address: z.string().trim().min(5).max(500) })).mutation(async ({ ctx, input }) => {
+      await managerContext(ctx.user.id);
+      const response = await makeRequest<GeocodingResult>("/maps/api/geocode/json", { address: input.address, language: "ko", region: "kr" });
+      const result = response.results?.[0];
+      if (response.status !== "OK" || !result) throw invalid("주소를 찾지 못했습니다. 도로명 또는 상세 주소를 확인해 주세요.");
+      return { address: result.formatted_address, latitude: result.geometry.location.lat, longitude: result.geometry.location.lng };
+    }),
     managerList: protectedProcedure.query(async ({ ctx }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) return [];
@@ -255,20 +283,21 @@ export const buildOnWorksRouter = router({
       const { db, profile } = await workerContext(ctx.user.id);
       return db.select({ assignment: jobAssignments, job: jobs, agency: agencies }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(eq(jobAssignments.workerId, profile.id)).orderBy(desc(jobAssignments.requestedAt));
     }),
-    create: protectedProcedure.input(z.object({ title: z.string().trim().min(2).max(200), region: z.string().trim().min(2).max(100), address: z.string().trim().max(500).optional(), jobDate: dateInput, startTime: z.string().trim().max(10).optional(), endTime: z.string().trim().max(10).optional(), requiredWorkers: z.number().int().min(1).max(100), dailyWage: z.number().int().min(0), description: z.string().trim().max(2000).optional() })).mutation(async ({ ctx, input }) => {
+    create: protectedProcedure.input(z.object({ title: z.string().trim().min(2).max(200), region: z.string().trim().min(2).max(100), address: z.string().trim().max(500).optional(), siteLatitude: z.number().finite().min(-90).max(90).optional(), siteLongitude: z.number().finite().min(-180).max(180).optional(), geofenceRadiusMeters: z.number().int().min(50).max(1_000).default(150), jobDate: dateInput, startTime: z.string().trim().max(10).optional(), endTime: z.string().trim().max(10).optional(), requiredWorkers: z.number().int().min(1).max(100), dailyWage: z.number().int().min(0), description: z.string().trim().max(2000).optional() }).superRefine((value, context) => { if ((value.siteLatitude === undefined) !== (value.siteLongitude === undefined)) context.addIssue({ code: "custom", message: "현장 위도와 경도는 함께 저장해야 합니다." }); })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) throw missing("먼저 인력소를 등록해 주세요.");
       const { jobDate, ...jobValues } = input;
-      await db.insert(jobs).values({ agencyId: agency.id, ...jobValues, jobDate: new Date(`${jobDate}T00:00:00.000Z`) });
+      await db.insert(jobs).values({ agencyId: agency.id, ...jobValues, siteGeocodedAt: input.siteLatitude !== undefined ? new Date() : null, jobDate: new Date(`${jobDate}T00:00:00.000Z`) });
       return { success: true };
     }),
-    update: protectedProcedure.input(z.object({ id: z.number().int().positive(), title: z.string().trim().min(2).max(200), region: z.string().trim().min(2).max(100), address: z.string().trim().max(500).nullable(), jobDate: dateInput, startTime: z.string().trim().max(10).nullable(), endTime: z.string().trim().max(10).nullable(), requiredWorkers: z.number().int().min(1).max(100), dailyWage: z.number().int().min(0), description: z.string().trim().max(2000).nullable() })).mutation(async ({ ctx, input }) => {
+    update: protectedProcedure.input(z.object({ id: z.number().int().positive(), title: z.string().trim().min(2).max(200), region: z.string().trim().min(2).max(100), address: z.string().trim().max(500).nullable(), siteLatitude: z.number().finite().min(-90).max(90).nullable().optional(), siteLongitude: z.number().finite().min(-180).max(180).nullable().optional(), geofenceRadiusMeters: z.number().int().min(50).max(1_000).optional(), jobDate: dateInput, startTime: z.string().trim().max(10).nullable(), endTime: z.string().trim().max(10).nullable(), requiredWorkers: z.number().int().min(1).max(100), dailyWage: z.number().int().min(0), description: z.string().trim().max(2000).nullable() }).superRefine((value, context) => { if (value.siteLatitude !== undefined && value.siteLongitude !== undefined && ((value.siteLatitude === null) !== (value.siteLongitude === null))) context.addIssue({ code: "custom", message: "현장 위도와 경도는 함께 저장해야 합니다." }); })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) throw missing("인력소를 찾을 수 없습니다.");
       const [job] = await db.select().from(jobs).where(and(eq(jobs.id, input.id), eq(jobs.agencyId, agency.id))).limit(1);
       if (!job) throw missing("일감을 찾을 수 없습니다.");
-      const { id, jobDate, ...changes } = input;
-      await db.update(jobs).set({ ...changes, jobDate: new Date(`${jobDate}T00:00:00.000Z`) }).where(eq(jobs.id, id));
+      const { id, jobDate, siteLatitude, siteLongitude, geofenceRadiusMeters, ...changes } = input;
+      const locationChanges = siteLatitude === undefined ? {} : { siteLatitude, siteLongitude, ...(geofenceRadiusMeters === undefined ? {} : { geofenceRadiusMeters }), siteGeocodedAt: siteLatitude === null ? null : new Date() };
+      await db.update(jobs).set({ ...changes, ...locationChanges, jobDate: new Date(`${jobDate}T00:00:00.000Z`) }).where(eq(jobs.id, id));
       return { success: true };
     }),
     cancel: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
@@ -337,26 +366,32 @@ export const buildOnWorksRouter = router({
       const { db, profile } = await workerContext(ctx.user.id);
       return db.select({ attendance: attendanceRecords, job: jobs }).from(attendanceRecords).innerJoin(jobs, eq(attendanceRecords.jobId, jobs.id)).where(eq(attendanceRecords.workerId, profile.id)).orderBy(desc(attendanceRecords.workDate));
     }),
-    checkIn: protectedProcedure.input(z.object({ jobId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    checkIn: protectedProcedure.input(z.object({ jobId: z.number().int().positive(), ...coordinateInput }).superRefine((value, context) => { if ((value.latitude === undefined) !== (value.longitude === undefined)) context.addIssue({ code: "custom", message: "위도와 경도는 함께 전송해야 합니다." }); })).mutation(async ({ ctx, input }) => {
       const { db, profile } = await workerContext(ctx.user.id);
-      const [assignment] = await db.select().from(jobAssignments).where(and(eq(jobAssignments.jobId, input.jobId), eq(jobAssignments.workerId, profile.id), eq(jobAssignments.status, "ASSIGNED"))).limit(1);
-      if (!assignment) throw forbidden("배정된 진행 중 일감만 출근할 수 있습니다.");
-      const workDate = new Date();
+      const [row] = await db.select({ assignment: jobAssignments, job: jobs }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).where(and(eq(jobAssignments.jobId, input.jobId), eq(jobAssignments.workerId, profile.id), eq(jobAssignments.status, "ASSIGNED"))).limit(1);
+      if (!row) throw forbidden("배정된 진행 중 일감만 출근할 수 있습니다.");
+      const verification = locationVerification(row.job, input);
+      const workDate = koreanWorkDate();
       const [record] = await db.select().from(attendanceRecords).where(and(eq(attendanceRecords.workerId, profile.id), eq(attendanceRecords.jobId, input.jobId), eq(attendanceRecords.workDate, workDate))).limit(1);
       if (record?.checkIn) throw invalid("이미 출근이 기록되어 있습니다.");
-      if (record) await db.update(attendanceRecords).set({ checkIn: new Date() }).where(eq(attendanceRecords.id, record.id));
-      else await db.insert(attendanceRecords).values({ workerId: profile.id, jobId: input.jobId, workDate, checkIn: new Date() });
-      return { success: true };
+      const location = { checkIn: new Date(), checkInLatitude: input.latitude, checkInLongitude: input.longitude, checkInAccuracyMeters: input.accuracyMeters === undefined ? null : Math.round(input.accuracyMeters), checkInDistanceMeters: verification.distanceMeters };
+      if (record) await db.update(attendanceRecords).set(location).where(eq(attendanceRecords.id, record.id));
+      else await db.insert(attendanceRecords).values({ workerId: profile.id, jobId: input.jobId, workDate, ...location });
+      return { success: true, locationVerified: verification.required, distanceMeters: verification.distanceMeters };
     }),
-    checkOut: protectedProcedure.input(z.object({ jobId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    checkOut: protectedProcedure.input(z.object({ jobId: z.number().int().positive(), ...coordinateInput }).superRefine((value, context) => { if ((value.latitude === undefined) !== (value.longitude === undefined)) context.addIssue({ code: "custom", message: "위도와 경도는 함께 전송해야 합니다." }); })).mutation(async ({ ctx, input }) => {
       const { db, profile } = await workerContext(ctx.user.id);
       const [record] = await db.select().from(attendanceRecords).where(and(eq(attendanceRecords.workerId, profile.id), eq(attendanceRecords.jobId, input.jobId), sql`${attendanceRecords.checkIn} is not null`, isNull(attendanceRecords.checkOut))).orderBy(desc(attendanceRecords.createdAt)).limit(1);
       if (!record) throw invalid("출근 기록을 먼저 남겨 주세요.");
+      const [job] = await db.select().from(jobs).where(eq(jobs.id, input.jobId)).limit(1);
+      if (!job) throw missing("일감 정보를 찾을 수 없습니다.");
+      const verification = locationVerification(job, input);
+      const location = { checkOut: new Date(), checkOutLatitude: input.latitude, checkOutLongitude: input.longitude, checkOutAccuracyMeters: input.accuracyMeters === undefined ? null : Math.round(input.accuracyMeters), checkOutDistanceMeters: verification.distanceMeters };
       await db.transaction(async tx => {
-        await tx.update(attendanceRecords).set({ checkOut: new Date() }).where(eq(attendanceRecords.id, record.id));
+        await tx.update(attendanceRecords).set(location).where(eq(attendanceRecords.id, record.id));
         await tx.update(jobAssignments).set({ status: "COMPLETED", completedAt: new Date() }).where(and(eq(jobAssignments.jobId, input.jobId), eq(jobAssignments.workerId, profile.id), eq(jobAssignments.status, "ASSIGNED")));
       });
-      return { success: true };
+      return { success: true, locationVerified: verification.required, distanceMeters: verification.distanceMeters };
     }),
   }),
 
