@@ -1,6 +1,5 @@
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -32,19 +31,30 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
 
-  // Express Proxy 설정 (Render / Vercel HTTPS 쿠키 전달 필수)
+  // Express Proxy 설정 (HTTPS 쿠키 전달 필수)
   app.set("trust proxy", 1);
 
-  // Cross-Domain CORS 설정
-  app.use(
-    cors({
-      origin: [
-        "https://build-on-works.vercel.app",
-        process.env.VITE_SERVER_URL || ""
-      ].filter(Boolean),
-      credentials: true,
-    })
-  );
+  // 별도 패키지(cors) 없이 Express 자체 미들웨어로 CORS 및 Session Cookie 설정
+  app.use((req, res, next) => {
+    const allowedOrigins = [
+      "https://build-on-works.vercel.app",
+      process.env.VITE_SERVER_URL || ""
+    ];
+    const origin = req.headers.origin;
+
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+    next();
+  });
 
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
