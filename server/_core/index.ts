@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -30,6 +31,21 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 
 async function startServer() {
   const app = express();
+
+  // Express Proxy 설정 (Render / Vercel HTTPS 쿠키 전달 필수)
+  app.set("trust proxy", 1);
+
+  // Cross-Domain CORS 설정
+  app.use(
+    cors({
+      origin: [
+        "https://build-on-works.vercel.app",
+        process.env.VITE_SERVER_URL || ""
+      ].filter(Boolean),
+      credentials: true,
+    })
+  );
+
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
