@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/trpc/:path*",
+      "destination": "https://build-on-works-server.onrender.com/api/trpc/:path*"
+    }
+  ]
+}
