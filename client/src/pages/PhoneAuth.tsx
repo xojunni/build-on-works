@@ -18,6 +18,7 @@ export default function PhoneAuth() {
   const afterAuth = async () => {
     await utils.auth.me.invalidate();
     await utils.buildOnWorks.account.viewer.invalidate();
+    window.location.reload(); // 세션 쿠키 수신 후 App.tsx 재실행을 위해 리로드
   };
 
   if (view === "login") return <Login onBack={() => setView("home")} onSuccess={afterAuth} />;
