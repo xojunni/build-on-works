@@ -17,6 +17,7 @@ export default function PhoneAuth() {
   const utils = trpc.useUtils();
   const afterAuth = async () => {
     await utils.auth.me.invalidate();
+    window.location.href = "/"; // 로그인 성공 후 메인 페이지(대시보드)로 이동
   };
 
   if (view === "login") return <Login onBack={() => setView("home")} onSuccess={afterAuth} />;
