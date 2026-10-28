@@ -82,3 +82,57 @@ describe("job date and permanent history routes", () => {
     expect(select).toHaveBeenCalledTimes(4);
   });
 });
+
+describe("current/past tabs and reputation profile ownership", () => {
+  beforeEach(() => { vi.clearAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-05T03:00:00Z")); });
+  afterEach(() => vi.useRealTimers());
+
+  it.each(["CURRENT", "PAST"] as const)("manager %s list contains only that period within retention", async period => {
+    const select = vi.fn().mockReturnValueOnce(chain([manager])).mockReturnValueOnce(chain([agency]))
+      .mockReturnValueOnce(chain([job(30, "2026-11-04"), job(31, "2026-10-22"), job(32, "2026-11-05"), job(33, "2026-11-12")])).mockReturnValue(chain([{ value: 0 }]));
+    const remove = vi.fn();
+    mocks.getDb.mockResolvedValue({ select, delete: remove });
+    const rows = await buildOnWorksRouter.createCaller(managerCtx).jobs.managerList({ period });
+    expect(rows.map(row => row.id)).toEqual(period === "CURRENT" ? [32, 33] : [30]);
+    expect(rows.every(row => row.isPast === (period === "PAST"))).toBe(true);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it.each(["CURRENT", "PAST"] as const)("worker %s discovery separates dates and never enables past application", async period => {
+    const select = vi.fn().mockReturnValueOnce(chain([worker])).mockReturnValueOnce(chain([profile]))
+      .mockReturnValueOnce(chain([])).mockReturnValueOnce(chain([])).mockReturnValueOnce(chain([]))
+      .mockReturnValueOnce(chain([job(30, "2026-11-04"), job(31, "2026-10-22"), job(32, "2026-11-05")].map(job => ({ job, agency }))))
+      .mockReturnValueOnce(chain([])).mockReturnValue(chain([{ value: 0 }]));
+    mocks.getDb.mockResolvedValue({ select });
+    const rows = await buildOnWorksRouter.createCaller(workerCtx).jobs.discover({ period });
+    expect(rows.map(row => row.job.id)).toEqual(period === "CURRENT" ? [32] : [30]);
+    expect(rows.every(row => row.canApply === (period === "CURRENT"))).toBe(true);
+  });
+
+  it("allows the worker to see their own blacklist with ban expiry", async () => {
+    const reports = [1, 2, 3, 4].map(id => ({ id, reportedAt: new Date(`2026-11-0${id}T00:00:00Z`) }));
+    mocks.getDb.mockResolvedValue({ select: vi.fn().mockReturnValueOnce(chain([worker])).mockReturnValueOnce(chain([profile])).mockReturnValueOnce(chain([])).mockReturnValueOnce(chain(reports)).mockReturnValueOnce(chain([])) });
+    const trust = await buildOnWorksRouter.createCaller(workerCtx).trust.mine();
+    expect(trust).toMatchObject({ isBlacklisted: true, isApplicationBanned: true, noShowCount: 4, applicationBanUntil: new Date("2026-11-18T00:00:00Z") });
+  });
+
+  it("manager profile without related workers never selects unrelated user data", async () => {
+    const select = vi.fn().mockReturnValueOnce(chain([manager])).mockReturnValueOnce(chain([agency])).mockReturnValueOnce(chain([])).mockReturnValueOnce(chain([])).mockReturnValueOnce(chain([]));
+    mocks.getDb.mockResolvedValue({ select });
+    const summary = await buildOnWorksRouter.createCaller(managerCtx).trust.managerOverview();
+    expect(summary).toMatchObject({ agency: { id: 10 }, workers: [], trust: { reviewCount: 0 } });
+    expect(select).toHaveBeenCalledTimes(5);
+  });
+
+  it("worker cannot read a manager's private reputation overview", async () => {
+    mocks.getDb.mockResolvedValue({ select: vi.fn().mockReturnValueOnce(chain([worker])) });
+    await expect(buildOnWorksRouter.createCaller(workerCtx).trust.managerOverview()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("manager cannot query the reputation of an unrelated applicant", async () => {
+    const select = vi.fn().mockReturnValueOnce(chain([manager])).mockReturnValueOnce(chain([agency])).mockReturnValueOnce(chain([])).mockReturnValueOnce(chain([]));
+    mocks.getDb.mockResolvedValue({ select });
+    await expect(buildOnWorksRouter.createCaller(managerCtx).trust.workerSummary({ workerId: 999 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).toHaveBeenCalledTimes(4);
+  });
+});
