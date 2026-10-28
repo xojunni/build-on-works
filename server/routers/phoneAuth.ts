@@ -42,6 +42,7 @@ export function verifyPassword(password: string, stored: string | null) {
 async function issueSession(res: any, req: any, openId: string, name: string) {
   const sessionToken = await sdk.createSessionToken(openId, { name });
   res.cookie(COOKIE_NAME, sessionToken, { ...getSessionCookieOptions(req), maxAge: ONE_YEAR_MS });
+  return sessionToken;
 }
 
 export const phoneAuthRouter = router({
@@ -81,8 +82,8 @@ export const phoneAuthRouter = router({
         status: "UNAFFILIATED",
       });
     }
-    await issueSession(ctx.res, ctx.req, `phone:${phone}`, input.name);
-    return { success: true, accountRole: input.accountRole };
+    const sessionToken = await issueSession(ctx.res, ctx.req, `phone:${phone}`, input.name);
+    return { success: true, accountRole: input.accountRole, sessionToken };
   }),
   login: publicProcedure.input(z.object({ phone: z.string().min(8), password: passwordInput })).mutation(async ({ ctx, input }) => {
     const db = await getDb();
@@ -91,7 +92,7 @@ export const phoneAuthRouter = router({
     const [account] = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
     if (!account || !verifyPassword(input.password, account.passwordHash)) throw new TRPCError({ code: "UNAUTHORIZED", message: "전화번호 또는 비밀번호가 올바르지 않습니다." });
     await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, account.id));
-    await issueSession(ctx.res, ctx.req, account.openId, account.name ?? "현장 사용자");
-    return { success: true, accountRole: account.accountRole };
+    const sessionToken = await issueSession(ctx.res, ctx.req, account.openId, account.name ?? "현장 사용자");
+    return { success: true, accountRole: account.accountRole, sessionToken };
   }),
 });

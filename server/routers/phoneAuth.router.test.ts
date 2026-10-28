@@ -30,7 +30,7 @@ describe("phoneAuth router", () => {
     mocks.getDb.mockResolvedValue({ select: vi.fn(emptySelect), insert: vi.fn(() => ({ values })) });
     const { ctx, cookie } = context();
     const result = await phoneAuthRouter.createCaller(ctx).register({ name: "홍길동", phone: "010-1234-5678", password: "1234", accountRole: "MANAGER" });
-    expect(result).toEqual({ success: true, accountRole: "MANAGER" });
+    expect(result).toEqual({ success: true, accountRole: "MANAGER", sessionToken: "signed-phone-session" });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ phone: "01012345678", openId: "phone:01012345678", passwordHash: expect.not.stringContaining("1234") }));
     expect(mocks.createSessionToken).toHaveBeenCalledWith("phone:01012345678", { name: "홍길동" });
     expect(cookie).toHaveBeenCalledWith(expect.any(String), "signed-phone-session", expect.objectContaining({ httpOnly: true }));
@@ -52,7 +52,7 @@ describe("phoneAuth router", () => {
     });
     const { ctx, cookie } = context();
     const result = await phoneAuthRouter.createCaller(ctx).login({ phone: "010-1234-5678", password: "1234" });
-    expect(result).toEqual({ success: true, accountRole: "MANAGER" });
+    expect(result).toEqual({ success: true, accountRole: "MANAGER", sessionToken: "signed-phone-session" });
     expect(cookie).toHaveBeenCalledWith(expect.any(String), "signed-phone-session", expect.objectContaining({ httpOnly: true }));
   });
 });
