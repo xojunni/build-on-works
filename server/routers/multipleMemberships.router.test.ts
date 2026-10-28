@@ -36,6 +36,9 @@ describe("multiple agency memberships", () => {
     const select = vi.fn()
       .mockReturnValueOnce(selectResult([account()]))
       .mockReturnValueOnce(selectResult([workerProfile()]))
+      .mockReturnValueOnce(selectResult([]))
+      .mockReturnValueOnce(selectResult([]))
+      .mockReturnValueOnce(selectResult([]))
       .mockReturnValueOnce(selectResult([{ job, agency }]))
       .mockReturnValueOnce(selectResult([]))
       .mockReturnValueOnce(selectResult([{ value: 0 }]));
@@ -54,12 +57,15 @@ describe("multiple agency memberships", () => {
       .mockReturnValueOnce(selectResult([workerProfile()]))
       .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING" }]))
       .mockReturnValueOnce(selectResult([{ value: 0 }]))
+      .mockReturnValueOnce(selectResult([]))
+      .mockReturnValueOnce(selectResult([]))
+      .mockReturnValueOnce(selectResult([]))
       .mockReturnValueOnce(selectResult([]));
     mocks.getDb.mockResolvedValue({ select, insert: vi.fn(() => ({ values })) });
 
     await expect(buildOnWorksRouter.createCaller(context()).jobs.submitApplication({ jobId: 31 })).resolves.toEqual({ success: true });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ jobId: 31, workerId: 21, status: "PENDING" }));
-    expect(select).toHaveBeenCalledTimes(5);
+    expect(select).toHaveBeenCalledTimes(8);
   });
 
   it("blocks a duplicate direct application for the same job", async () => {

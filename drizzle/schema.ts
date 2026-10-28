@@ -15,8 +15,11 @@ export const accountRoles = ["MANAGER", "WORKER"] as const;
 export const workerStatuses = ["UNAFFILIATED", "PENDING", "ACTIVE", "REJECTED", "INACTIVE"] as const;
 export const membershipStatuses = ["PENDING", "ACTIVE", "REJECTED", "INACTIVE"] as const;
 export const jobStatuses = ["RECRUITING", "CLOSED", "CANCELED"] as const;
-export const assignmentStatuses = ["PENDING", "ASSIGNED", "REJECTED", "CANCELED", "COMPLETED"] as const;
+export const assignmentStatuses = ["PENDING", "ASSIGNED", "REJECTED", "CANCELED", "COMPLETED", "NO_SHOW"] as const;
 export const paymentStatuses = ["PENDING", "PAID", "CANCELED"] as const;
+export const attendanceReviewStatuses = ["NORMAL", "LATE"] as const;
+export const safetyReviewStatuses = ["PASS", "FAIL"] as const;
+export const wageReviewStatuses = ["NORMAL", "LATE", "UNPAID"] as const;
 
 /** Core OAuth account managed by the template, extended with Build On Works membership metadata. */
 export const users = mysqlTable("users", {
@@ -189,6 +192,66 @@ export const paymentRecords = mysqlTable(
   })
 );
 
+/** Manager's completed-job review of a worker. One review is allowed per assignment. */
+export const managerWorkerReviews = mysqlTable(
+  "manager_worker_reviews",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    assignmentId: int("assignmentId").notNull().references(() => jobAssignments.id),
+    workerId: int("workerId").notNull().references(() => workerProfiles.id),
+    agencyId: int("agencyId").notNull().references(() => agencies.id),
+    managerUserId: int("managerUserId").notNull().references(() => users.id),
+    attendanceStatus: mysqlEnum("attendanceStatus", attendanceReviewStatuses).notNull(),
+    skillScore: int("skillScore").notNull(),
+    safetyStatus: mysqlEnum("safetyStatus", safetyReviewStatuses).notNull(),
+    submittedAt: timestamp("submittedAt").defaultNow().notNull(),
+  },
+  table => ({
+    assignmentUnique: uniqueIndex("manager_worker_reviews_assignment_unique").on(table.assignmentId),
+    workerSubmittedIndex: index("manager_worker_reviews_worker_submitted_idx").on(table.workerId, table.submittedAt),
+    agencySubmittedIndex: index("manager_worker_reviews_agency_submitted_idx").on(table.agencyId, table.submittedAt),
+  })
+);
+
+/** Worker's completed-job review of the agency. One review is allowed per assignment. */
+export const workerAgencyReviews = mysqlTable(
+  "worker_agency_reviews",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    assignmentId: int("assignmentId").notNull().references(() => jobAssignments.id),
+    workerId: int("workerId").notNull().references(() => workerProfiles.id),
+    agencyId: int("agencyId").notNull().references(() => agencies.id),
+    workerUserId: int("workerUserId").notNull().references(() => users.id),
+    wageStatus: mysqlEnum("wageStatus", wageReviewStatuses).notNull(),
+    siteSafetyScore: int("siteSafetyScore").notNull(),
+    facilitiesScore: int("facilitiesScore").notNull(),
+    submittedAt: timestamp("submittedAt").defaultNow().notNull(),
+  },
+  table => ({
+    assignmentUnique: uniqueIndex("worker_agency_reviews_assignment_unique").on(table.assignmentId),
+    agencySubmittedIndex: index("worker_agency_reviews_agency_submitted_idx").on(table.agencyId, table.submittedAt),
+    workerSubmittedIndex: index("worker_agency_reviews_worker_submitted_idx").on(table.workerId, table.submittedAt),
+  })
+);
+
+/** Manager-confirmed no-show reports. These are deliberately separate from completed-job reviews. */
+export const noShowReports = mysqlTable(
+  "no_show_reports",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    assignmentId: int("assignmentId").notNull().references(() => jobAssignments.id),
+    workerId: int("workerId").notNull().references(() => workerProfiles.id),
+    agencyId: int("agencyId").notNull().references(() => agencies.id),
+    managerUserId: int("managerUserId").notNull().references(() => users.id),
+    reportedAt: timestamp("reportedAt").defaultNow().notNull(),
+  },
+  table => ({
+    assignmentUnique: uniqueIndex("no_show_reports_assignment_unique").on(table.assignmentId),
+    workerReportedIndex: index("no_show_reports_worker_reported_idx").on(table.workerId, table.reportedAt),
+    agencyReportedIndex: index("no_show_reports_agency_reported_idx").on(table.agencyId, table.reportedAt),
+  })
+);
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type WorkerProfile = typeof workerProfiles.$inferSelect;
@@ -198,3 +261,6 @@ export type Job = typeof jobs.$inferSelect;
 export type JobAssignment = typeof jobAssignments.$inferSelect;
 export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
 export type PaymentRecord = typeof paymentRecords.$inferSelect;
+export type ManagerWorkerReview = typeof managerWorkerReviews.$inferSelect;
+export type WorkerAgencyReview = typeof workerAgencyReviews.$inferSelect;
+export type NoShowReport = typeof noShowReports.$inferSelect;

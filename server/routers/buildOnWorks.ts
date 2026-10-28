@@ -1,13 +1,16 @@
 import { TRPCError } from "@trpc/server";
-import { and, count, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   agencies,
   attendanceRecords,
   jobAssignments,
   jobs,
+  managerWorkerReviews,
+  noShowReports,
   paymentRecords,
   users,
+  workerAgencyReviews,
   workerAgencyMemberships,
   workerProfiles,
 } from "../../drizzle/schema";
@@ -18,6 +21,7 @@ import { summarizeWorkHistory } from "../workHistory";
 import { makeRequest, type GeocodingResult } from "../_core/map";
 import { verifyWorksiteGeofence } from "../geofence";
 import { koreanWorkDate } from "../attendanceDate";
+import { summarizeAgencyTrust, summarizeWorkerTrust } from "../trust";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 const coordinateInput = {
@@ -101,6 +105,32 @@ async function completedWorkHistory(db: NonNullable<Awaited<ReturnType<typeof ge
     job: { id: row.job.id, title: row.job.title, jobDate: row.job.jobDate, agencyId: row.job.agencyId },
     agency: { id: row.agency.id, name: row.agency.name, region: row.agency.region },
   })));
+}
+
+async function workerTrustSummary(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, workerId: number) {
+  const [reviews, noShows, normalCompletions] = await Promise.all([
+    db.select().from(managerWorkerReviews).where(eq(managerWorkerReviews.workerId, workerId)),
+    db.select().from(noShowReports).where(eq(noShowReports.workerId, workerId)),
+    db.select({ id: attendanceRecords.id, at: attendanceRecords.checkOut })
+      .from(attendanceRecords)
+      .innerJoin(jobAssignments, and(eq(jobAssignments.jobId, attendanceRecords.jobId), eq(jobAssignments.workerId, attendanceRecords.workerId)))
+      .where(and(eq(attendanceRecords.workerId, workerId), eq(jobAssignments.status, "COMPLETED"), isNotNull(attendanceRecords.checkOut))),
+  ]);
+  return summarizeWorkerTrust(
+    reviews.map(review => ({ id: review.id, at: review.submittedAt, skillScore: review.skillScore, safetyStatus: review.safetyStatus, attendanceStatus: review.attendanceStatus })),
+    noShows.map(noShow => ({ id: noShow.id, at: noShow.reportedAt })),
+    normalCompletions.map(item => ({ id: item.id, at: item.at! }))
+  );
+}
+
+async function agencyTrustSummary(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, agencyId: number) {
+  const reviews = await db.select().from(workerAgencyReviews).where(eq(workerAgencyReviews.agencyId, agencyId));
+  return summarizeAgencyTrust(reviews.map(review => ({ id: review.id, at: review.submittedAt, wageStatus: review.wageStatus, siteSafetyScore: review.siteSafetyScore, facilitiesScore: review.facilitiesScore })));
+}
+
+function isDuplicateKeyError(error: unknown) {
+  const value = error as { code?: string; message?: string };
+  return value?.code === "ER_DUP_ENTRY" || /duplicate/i.test(value?.message ?? String(error));
 }
 
 export const buildOnWorksRouter = router({
@@ -270,18 +300,19 @@ export const buildOnWorksRouter = router({
     }),
     discover: protectedProcedure.input(z.object({ region: z.string().trim().optional(), agencyId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
       const { db, profile } = await workerContext(ctx.user.id);
+      const trust = await workerTrustSummary(db, profile.id);
       const filters = [eq(jobs.status, "RECRUITING")];
       if (input?.region) filters.push(eq(jobs.region, input.region));
       if (input?.agencyId) filters.push(eq(jobs.agencyId, input.agencyId));
       const rows = await db.select({ job: jobs, agency: agencies }).from(jobs).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(and(...filters)).orderBy(jobs.jobDate);
       const assignments = await db.select().from(jobAssignments).where(eq(jobAssignments.workerId, profile.id));
       return Promise.all(rows.map(async row => {
-        return { ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, canApply: true, assignedCount: await assignmentCapacity(db, row.job.id) };
+        return { ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, canApply: !trust.isApplicationBanned, applicationBanUntil: trust.applicationBanUntil, assignedCount: await assignmentCapacity(db, row.job.id) };
       }));
     }),
     workerAssignments: protectedProcedure.query(async ({ ctx }) => {
       const { db, profile } = await workerContext(ctx.user.id);
-      return db.select({ assignment: jobAssignments, job: jobs, agency: agencies }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(eq(jobAssignments.workerId, profile.id)).orderBy(desc(jobAssignments.requestedAt));
+      return db.select({ assignment: jobAssignments, job: jobs, agency: agencies, workerAgencyReview: workerAgencyReviews }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).leftJoin(workerAgencyReviews, eq(workerAgencyReviews.assignmentId, jobAssignments.id)).where(eq(jobAssignments.workerId, profile.id)).orderBy(desc(jobAssignments.requestedAt));
     }),
     create: protectedProcedure.input(z.object({ title: z.string().trim().min(2).max(200), region: z.string().trim().min(2).max(100), address: z.string().trim().max(500).optional(), siteLatitude: z.number().finite().min(-90).max(90).optional(), siteLongitude: z.number().finite().min(-180).max(180).optional(), geofenceRadiusMeters: z.number().int().min(50).max(1_000).default(150), jobDate: dateInput, startTime: z.string().trim().max(10).optional(), endTime: z.string().trim().max(10).optional(), requiredWorkers: z.number().int().min(1).max(100), dailyWage: z.number().int().min(0), description: z.string().trim().max(2000).optional() }).superRefine((value, context) => { if ((value.siteLatitude === undefined) !== (value.siteLongitude === undefined)) context.addIssue({ code: "custom", message: "현장 위도와 경도는 함께 저장해야 합니다." }); })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
@@ -313,6 +344,11 @@ export const buildOnWorksRouter = router({
       if ((await assignmentCapacity(db, job.id)) >= job.requiredWorkers) throw invalid("모집 인원이 모두 찼습니다.");
       const [existing] = await db.select().from(jobAssignments).where(and(eq(jobAssignments.jobId, job.id), eq(jobAssignments.workerId, profile.id))).limit(1);
       if (existing) throw invalid("이미 신청했거나 처리된 일감입니다.");
+      const trust = await workerTrustSummary(db, profile.id);
+      if (trust.isApplicationBanned) {
+        const until = trust.applicationBanUntil?.toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) ?? "제재 종료일";
+        throw invalid(`무단 노쇼 누적으로 ${until}까지 신규 일감 신청이 제한됩니다.`);
+      }
       await db.insert(jobAssignments).values({ jobId: job.id, workerId: profile.id, status: "PENDING" });
       return { success: true };
     }),
@@ -326,8 +362,8 @@ export const buildOnWorksRouter = router({
       if (!agency) return [];
       const [job] = await db.select().from(jobs).where(and(eq(jobs.id, input.jobId), eq(jobs.agencyId, agency.id))).limit(1);
       if (!job) throw missing("일감을 찾을 수 없습니다.");
-      const rows = await db.select({ assignment: jobAssignments, profile: workerProfiles, user: users }).from(jobAssignments).innerJoin(workerProfiles, eq(jobAssignments.workerId, workerProfiles.id)).innerJoin(users, eq(workerProfiles.userId, users.id)).where(eq(jobAssignments.jobId, job.id)).orderBy(desc(jobAssignments.requestedAt));
-      return rows.map(row => ({ assignment: row.assignment, ...toManagerWorkerDetail(row) }));
+      const rows = await db.select({ assignment: jobAssignments, profile: workerProfiles, user: users, managerReview: managerWorkerReviews }).from(jobAssignments).innerJoin(workerProfiles, eq(jobAssignments.workerId, workerProfiles.id)).innerJoin(users, eq(workerProfiles.userId, users.id)).leftJoin(managerWorkerReviews, eq(managerWorkerReviews.assignmentId, jobAssignments.id)).where(eq(jobAssignments.jobId, job.id)).orderBy(desc(jobAssignments.requestedAt));
+      return rows.map(row => ({ assignment: row.assignment, managerReview: row.managerReview, ...toManagerWorkerDetail(row) }));
     }),
     decideApplication: protectedProcedure.input(z.object({ assignmentId: z.number().int().positive(), approved: z.boolean() })).mutation(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
@@ -338,6 +374,80 @@ export const buildOnWorksRouter = router({
       await db.update(jobAssignments).set({ status: input.approved ? "ASSIGNED" : "REJECTED", respondedAt: new Date() }).where(eq(jobAssignments.id, row.assignment.id));
       if (input.approved && (await assignmentCapacity(db, row.job.id)) >= row.job.requiredWorkers) await db.update(jobs).set({ status: "CLOSED" }).where(eq(jobs.id, row.job.id));
       return { success: true };
+    }),
+  }),
+
+  trust: router({
+    mine: protectedProcedure.query(async ({ ctx }) => {
+      const { db, profile } = await workerContext(ctx.user.id);
+      return workerTrustSummary(db, profile.id);
+    }),
+    workerSummary: protectedProcedure.input(z.object({ workerId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const { db, agency } = await managerContext(ctx.user.id);
+      if (!agency) throw missing("먼저 인력소를 등록해 주세요.");
+      const [membership] = await db.select({ id: workerAgencyMemberships.id }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.workerId, input.workerId), eq(workerAgencyMemberships.agencyId, agency.id))).limit(1);
+      const [application] = await db.select({ id: jobAssignments.id }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).where(and(eq(jobAssignments.workerId, input.workerId), eq(jobs.agencyId, agency.id))).limit(1);
+      if (!membership && !application) throw forbidden("신청 또는 가입 요청 관계가 있는 인부의 신뢰 정보만 조회할 수 있습니다.");
+      return workerTrustSummary(db, input.workerId);
+    }),
+    agencySummaries: protectedProcedure.query(async ({ ctx }) => {
+      const { db, profile } = await workerContext(ctx.user.id);
+      const rows = await db.select({ agency: agencies }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(and(eq(jobAssignments.workerId, profile.id), eq(jobAssignments.status, "COMPLETED")));
+      const agencyMap = new Map(rows.map(row => [row.agency.id, row.agency]));
+      return Promise.all(Array.from(agencyMap.values()).map(async agency => ({ agency, trust: await agencyTrustSummary(db, agency.id) })));
+    }),
+    submitManagerReview: protectedProcedure.input(z.object({
+      assignmentId: z.number().int().positive(),
+      attendanceStatus: z.enum(["NORMAL", "LATE"]),
+      skillScore: z.number().int().min(1).max(5),
+      safetyStatus: z.enum(["PASS", "FAIL"]),
+    })).mutation(async ({ ctx, input }) => {
+      const { db, agency } = await managerContext(ctx.user.id);
+      if (!agency) throw missing("먼저 인력소를 등록해 주세요.");
+      const [row] = await db.select({ assignment: jobAssignments, job: jobs }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).where(eq(jobAssignments.id, input.assignmentId)).limit(1);
+      if (!row || row.job.agencyId !== agency.id || row.assignment.status !== "COMPLETED") throw invalid("내 인력소의 완료된 일감에 대해서만 인부를 평가할 수 있습니다.");
+      try {
+        await db.insert(managerWorkerReviews).values({ assignmentId: row.assignment.id, workerId: row.assignment.workerId, agencyId: agency.id, managerUserId: ctx.user.id, attendanceStatus: input.attendanceStatus, skillScore: input.skillScore, safetyStatus: input.safetyStatus });
+      } catch (error) {
+        if (isDuplicateKeyError(error)) throw invalid("이미 해당 완료 일감의 인부 평가를 작성했습니다.");
+        throw error;
+      }
+      return { success: true, trust: await workerTrustSummary(db, row.assignment.workerId) };
+    }),
+    reportNoShow: protectedProcedure.input(z.object({ assignmentId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const { db, agency } = await managerContext(ctx.user.id);
+      if (!agency) throw missing("먼저 인력소를 등록해 주세요.");
+      const [row] = await db.select({ assignment: jobAssignments, job: jobs, attendance: attendanceRecords }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).leftJoin(attendanceRecords, and(eq(attendanceRecords.jobId, jobAssignments.jobId), eq(attendanceRecords.workerId, jobAssignments.workerId))).where(eq(jobAssignments.id, input.assignmentId)).limit(1);
+      if (!row || row.job.agencyId !== agency.id || row.assignment.status !== "ASSIGNED") throw invalid("배정된 진행 일감에 대해서만 노쇼를 기록할 수 있습니다.");
+      if (row.attendance?.checkIn) throw invalid("출근 기록이 있는 인부는 노쇼로 처리할 수 없습니다.");
+      if (new Date(row.job.jobDate).getTime() >= koreanWorkDate().getTime()) throw invalid("근무일이 지난 뒤에만 무단 노쇼를 기록할 수 있습니다.");
+      try {
+        await db.transaction(async tx => {
+          await tx.insert(noShowReports).values({ assignmentId: row.assignment.id, workerId: row.assignment.workerId, agencyId: agency.id, managerUserId: ctx.user.id });
+          await tx.update(jobAssignments).set({ status: "NO_SHOW" }).where(and(eq(jobAssignments.id, row.assignment.id), eq(jobAssignments.status, "ASSIGNED")));
+        });
+      } catch (error) {
+        if (isDuplicateKeyError(error)) throw invalid("이미 해당 배정 건은 노쇼로 기록되었습니다.");
+        throw error;
+      }
+      return { success: true, trust: await workerTrustSummary(db, row.assignment.workerId) };
+    }),
+    submitWorkerAgencyReview: protectedProcedure.input(z.object({
+      assignmentId: z.number().int().positive(),
+      wageStatus: z.enum(["NORMAL", "LATE", "UNPAID"]),
+      siteSafetyScore: z.number().int().min(1).max(5),
+      facilitiesScore: z.number().int().min(1).max(5),
+    })).mutation(async ({ ctx, input }) => {
+      const { db, profile } = await workerContext(ctx.user.id);
+      const [row] = await db.select({ assignment: jobAssignments, job: jobs }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).where(eq(jobAssignments.id, input.assignmentId)).limit(1);
+      if (!row || row.assignment.workerId !== profile.id || row.assignment.status !== "COMPLETED") throw invalid("본인이 완료한 일감에 대해서만 인력소를 평가할 수 있습니다.");
+      try {
+        await db.insert(workerAgencyReviews).values({ assignmentId: row.assignment.id, workerId: profile.id, agencyId: row.job.agencyId, workerUserId: ctx.user.id, wageStatus: input.wageStatus, siteSafetyScore: input.siteSafetyScore, facilitiesScore: input.facilitiesScore });
+      } catch (error) {
+        if (isDuplicateKeyError(error)) throw invalid("이미 해당 완료 일감의 인력소 평가를 작성했습니다.");
+        throw error;
+      }
+      return { success: true, trust: await agencyTrustSummary(db, row.job.agencyId) };
     }),
   }),
 

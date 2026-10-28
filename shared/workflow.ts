@@ -1,12 +1,13 @@
-export type AssignmentState = "PENDING" | "ASSIGNED" | "REJECTED" | "CANCELED" | "COMPLETED";
+export type AssignmentState = "PENDING" | "ASSIGNED" | "REJECTED" | "CANCELED" | "COMPLETED" | "NO_SHOW";
 export type PaymentState = "PENDING" | "PAID" | "CANCELED";
 
 const assignmentTransitions: Record<AssignmentState, AssignmentState[]> = {
   PENDING: ["ASSIGNED", "REJECTED", "CANCELED"],
-  ASSIGNED: ["COMPLETED"],
+  ASSIGNED: ["COMPLETED", "NO_SHOW"],
   REJECTED: [],
   CANCELED: [],
   COMPLETED: [],
+  NO_SHOW: [],
 };
 
 const paymentTransitions: Record<PaymentState, PaymentState[]> = {

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { canTransitionAssignment, canTransitionPayment, duplicateMessage } from "../shared/workflow";
 
 describe("Build On Works server workflow guards", () => {
-  it("permits a worker application only through pending, assigned, and completed states", () => {
+  it("permits a worker application only through pending, assigned, completed, or no-show terminal states", () => {
     expect(canTransitionAssignment("PENDING", "ASSIGNED")).toBe(true);
     expect(canTransitionAssignment("ASSIGNED", "COMPLETED")).toBe(true);
+    expect(canTransitionAssignment("ASSIGNED", "NO_SHOW")).toBe(true);
     expect(canTransitionAssignment("COMPLETED", "ASSIGNED")).toBe(false);
+    expect(canTransitionAssignment("NO_SHOW", "COMPLETED")).toBe(false);
     expect(canTransitionAssignment("CANCELED", "ASSIGNED")).toBe(false);
   });
 

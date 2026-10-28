@@ -1,6 +1,7 @@
 import * as React from "react";
 import { BadgeCheck, BriefcaseBusiness, CalendarDays, CreditCard, Loader2, Phone, UserRound } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { WorkerTrustSummary } from "@/components/WorkerTrustSummary";
 
 type WorkerDetailRow = {
   user: { name: string | null; phone: string | null };
@@ -16,10 +17,11 @@ type WorkerDetailRow = {
 
 export function WorkerDetailCard({ row }: { row: WorkerDetailRow }) {
   const history = trpc.buildOnWorks.workHistory.managerWorker.useQuery({ workerId: row.profile.id });
-  return <WorkerDetailContent row={row} history={history.data} loading={history.isLoading} />;
+  const trust = trpc.buildOnWorks.trust.workerSummary.useQuery({ workerId: row.profile.id });
+  return <WorkerDetailContent row={row} history={history.data} loading={history.isLoading} trust={trust.data} trustLoading={trust.isLoading} />;
 }
 
-export function WorkerDetailContent({ row, history, loading }: { row: WorkerDetailRow; history?: any; loading?: boolean }) {
+export function WorkerDetailContent({ row, history, loading, trust, trustLoading }: { row: WorkerDetailRow; history?: any; loading?: boolean; trust?: any; trustLoading?: boolean }) {
   const phone = row.profile.phone || row.user.phone || "등록되지 않음";
   return (
     <div className="mt-3 rounded-2xl border border-[#173d38]/10 bg-white p-4">
@@ -33,6 +35,7 @@ export function WorkerDetailContent({ row, history, loading }: { row: WorkerDeta
         <p className="flex items-center gap-1.5 text-xs font-bold text-[#56615b]"><CreditCard className="h-3.5 w-3.5 text-[#d56835]" />급여 계좌 <span className="font-normal text-[#8a958f]">· 일부 마스킹</span></p>
         <p className="mt-1 text-sm font-bold text-[#1d2422]">{row.profile.bankName || "은행 미등록"} {row.profile.bankAccount}</p>
       </div>
+      <WorkerTrustSummary trust={trust} loading={trustLoading} />
       <section className="mt-3 border-t border-[#1d2422]/6 pt-3">
         <p className="flex items-center gap-1.5 text-xs font-bold text-[#56615b]"><BriefcaseBusiness className="h-3.5 w-3.5 text-[#d56835]" />실제 근무 이력 <span className="font-normal text-[#8a958f]">· 완료 일감 기준</span></p>
         {loading ? <div className="mt-3 flex items-center gap-2 text-xs text-[#718079]"><Loader2 className="h-3.5 w-3.5 animate-spin" />근무 이력 확인 중</div> : history ? <WorkHistory history={history} /> : <p className="mt-2 text-xs text-[#718079]">근무 이력을 불러올 수 없습니다.</p>}
