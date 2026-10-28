@@ -1,4 +1,4 @@
-import { rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, isNull, like } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
@@ -367,6 +367,11 @@ async function writeManifest(now: Date, agencyCount: number) {
 async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) fail("DATABASE_URL is required to run this seed.");
+
+  let existingManifest: { refinedAt?: string } | null = null;
+  try { existingManifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (existingManifest?.refinedAt) fail("These generated accounts were already refined. Do not rerun the original seed; use the manifest-based refinement/verification scripts.");
 
   const now = new Date();
   const accountTimestamp = demoAccountTimestamp();
