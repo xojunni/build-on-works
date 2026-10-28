@@ -2,6 +2,7 @@ import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo } from "react";
+import { clearPreviewSession } from "@/lib/previewSession";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -39,12 +40,9 @@ export function useAuth(options?: UseAuthOptions) {
       }
       throw error;
     } finally {
-      // Clear the Preview auto-login token mirrored into sessionStorage, so
-      // header-based sessions (Safari ITP / WebView) are logged out too. The
-      // backend cookie is cleared by the logout mutation.
-      try {
-        sessionStorage.removeItem("manus-cookie");
-      } catch {}
+      // The fallback exists only for the embedded editor preview. The backend
+      // always clears the normal per-browser cookie session.
+      clearPreviewSession();
       utils.auth.me.setData(undefined, null);
       await utils.auth.me.invalidate();
     }

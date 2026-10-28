@@ -39,10 +39,17 @@ export function verifyPassword(password: string, stored: string | null) {
   return timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
+function isEmbeddedPreviewRequest(req: any) {
+  const host = typeof req?.hostname === "string" ? req.hostname : String(req?.headers?.host ?? "").split(":")[0];
+  return host.endsWith(".manus.computer");
+}
+
 async function issueSession(res: any, req: any, openId: string, name: string) {
   const sessionToken = await sdk.createSessionToken(openId, { name });
   res.cookie(COOKIE_NAME, sessionToken, { ...getSessionCookieOptions(req), maxAge: ONE_YEAR_MS });
-  return sessionToken;
+  // Public deployments use an HttpOnly cookie only. The token is returned solely
+  // to the embedded editor preview where third-party cookies can be blocked.
+  return isEmbeddedPreviewRequest(req) ? sessionToken : null;
 }
 
 export const phoneAuthRouter = router({

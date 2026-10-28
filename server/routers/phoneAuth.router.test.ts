@@ -7,10 +7,10 @@ vi.mock("../_core/sdk", () => ({ sdk: { createSessionToken: mocks.createSessionT
 
 import { hashPassword, phoneAuthRouter } from "./phoneAuth";
 
-function context() {
+function context(hostname = "3000-preview.manus.computer") {
   const cookie = vi.fn();
   return {
-    ctx: { req: { protocol: "https", headers: {} }, res: { cookie } } as any,
+    ctx: { req: { protocol: "https", hostname, headers: {} }, res: { cookie } } as any,
     cookie,
   };
 }
@@ -54,5 +54,16 @@ describe("phoneAuth router", () => {
     const result = await phoneAuthRouter.createCaller(ctx).login({ phone: "010-1234-5678", password: "1234" });
     expect(result).toEqual({ success: true, accountRole: "MANAGER", sessionToken: "signed-phone-session" });
     expect(cookie).toHaveBeenCalledWith(expect.any(String), "signed-phone-session", expect.objectContaining({ httpOnly: true }));
+  });
+
+  it("keeps the fallback session token out of a public deployment response", async () => {
+    const account = { id: 7, phone: "01012345678", passwordHash: hashPassword("1234", "valid-salt"), openId: "phone:01012345678", name: "홍길동", accountRole: "MANAGER" };
+    mocks.getDb.mockResolvedValue({
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([account]) }) }) })),
+      update: vi.fn(() => ({ set: () => ({ where: vi.fn().mockResolvedValue(undefined) }) })),
+    });
+    const { ctx } = context("buildworks.manus.space");
+    const result = await phoneAuthRouter.createCaller(ctx).login({ phone: "010-1234-5678", password: "1234" });
+    expect(result).toEqual({ success: true, accountRole: "MANAGER", sessionToken: null });
   });
 });

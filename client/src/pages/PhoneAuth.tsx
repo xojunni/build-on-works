@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, Building2, CheckCircle2, HardHat, Loader2, LockK
 import { FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { COOKIE_NAME } from "@shared/const";
+import { storePreviewSession } from "@/lib/previewSession";
 
 type View = "home" | "login" | "register";
 type AccountRole = "MANAGER" | "WORKER";
@@ -16,14 +16,10 @@ export default function PhoneAuth() {
     return requested === "login" || requested === "register" ? requested : "home";
   });
   const utils = trpc.useUtils();
-  const afterAuth = async (sessionToken: string) => {
-    // A secure cookie may be blocked in an embedded preview. Persist the same
-    // signed session for the tRPC Authorization-header fallback in main.tsx.
-    try {
-      sessionStorage.setItem("manus-cookie", `${COOKIE_NAME}=${sessionToken}`);
-    } catch {
-      // Cookie-based authentication remains available where sessionStorage is unavailable.
-    }
+  const afterAuth = async (sessionToken: string | null) => {
+    // The fallback is deliberately preview-only. Public deployments retain
+    // isolated HttpOnly cookie sessions per browser and per device.
+    if (sessionToken) storePreviewSession(sessionToken);
     await utils.auth.me.invalidate();
     await utils.buildOnWorks.account.viewer.invalidate();
     window.location.reload(); // 세션 쿠키 또는 Bearer 세션 수신 후 App.tsx 재실행
@@ -38,14 +34,14 @@ function Welcome({ onLogin, onRegister }: { onLogin: () => void; onRegister: () 
   return <main className="min-h-screen overflow-hidden bg-[#173d38] text-white"><div className="relative mx-auto flex min-h-screen max-w-5xl flex-col justify-between px-6 pb-[max(1.75rem,env(safe-area-inset-bottom))] pt-[max(2rem,env(safe-area-inset-top))]"><div className="absolute -right-24 top-28 h-80 w-80 rounded-full border border-white/10" /><div className="absolute -right-10 top-44 h-56 w-56 rounded-full border border-[#f58252]/30" /><header className="relative flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#e86f3e] shadow-lg shadow-black/20"><HardHat className="h-5 w-5" /></div><div><p className="font-extrabold tracking-[-0.04em]">Build On Works</p><p className="text-xs text-white/60">현장을 기반으로 사람과 일을 연결하다</p></div></header><section className="relative py-10"><p className="mb-5 text-[11px] font-bold uppercase tracking-[0.22em] text-[#ffb18c]">Field workforce operations</p><h1 className="max-w-xl text-[3.25rem] font-extrabold leading-[.96] tracking-[-0.075em] sm:text-6xl">현장을<br />더 정확하게<br /><span className="text-[#ff9b70]">운영하세요.</span></h1><p className="mt-6 max-w-md text-[15px] leading-7 text-white/70">인력소장과 인부가 일감, 출퇴근, 급여를 각자의 역할에 맞게 간편하게 관리합니다.</p><div className="mt-9 grid max-w-xl grid-cols-3 gap-2.5"><Feature icon={Building2} text="인력소 운영" /><Feature icon={CheckCircle2} text="출퇴근 기록" /><Feature icon={ShieldCheck} text="권한별 관리" /></div></section><div className="relative grid gap-3 sm:max-w-md"><Button onClick={onLogin} className="h-14 rounded-2xl bg-[#e86f3e] text-base font-bold hover:bg-[#f58252]">로그인 <ArrowRight className="ml-2 h-4 w-4" /></Button><Button onClick={onRegister} variant="outline" className="h-14 rounded-2xl border-white/30 bg-white/5 text-base font-bold text-white hover:bg-white/10 hover:text-white">회원가입</Button><p className="pt-1 text-center text-[11px] text-white/52">전화번호와 비밀번호로 안전하게 로그인합니다.</p></div></div></main>;
 }
 
-function Login({ onBack, onSuccess }: { onBack: () => void; onSuccess: (sessionToken: string) => Promise<void> }) {
+function Login({ onBack, onSuccess }: { onBack: () => void; onSuccess: (sessionToken: string | null) => Promise<void> }) {
   const [phone, setPhone] = useState(""); const [password, setPassword] = useState("");
   const login = trpc.phoneAuth.login.useMutation({ onSuccess: async data => { toast.success("로그인 성공!"); await onSuccess(data.sessionToken); }, onError: error => toast.error(error.message) });
   const submit = (event: FormEvent) => { event.preventDefault(); login.mutate({ phone, password }); };
   return <AuthLayout eyebrow="전화번호 로그인" title={<>현장 계정으로<br />로그인하세요.</>} description="가입한 휴대폰 번호와 비밀번호를 입력해 주세요." onBack={onBack}><form onSubmit={submit} className="space-y-5"><AuthField icon={Phone} label="휴대폰 번호"><Input required value={phone} onChange={e => setPhone(formatPhoneInput(e.target.value))} inputMode="tel" placeholder="010-0000-0000" /></AuthField><AuthField icon={LockKeyhole} label="비밀번호"><Input required value={password} onChange={e => setPassword(e.target.value)} type="password" autoComplete="current-password" placeholder="비밀번호 입력" /></AuthField><Button disabled={login.isPending} className="h-13 w-full rounded-2xl bg-[#173d38] text-base font-bold hover:bg-[#0e2e2a]">{login.isPending ? <Loader2 className="animate-spin" /> : <>로그인 <ArrowRight className="ml-1 h-4 w-4" /></>}</Button></form></AuthLayout>;
 }
 
-function Register({ onBack, onSuccess }: { onBack: () => void; onSuccess: (sessionToken: string) => Promise<void> }) {
+function Register({ onBack, onSuccess }: { onBack: () => void; onSuccess: (sessionToken: string | null) => Promise<void> }) {
   const [role, setRole] = useState<AccountRole>("MANAGER"); const [name, setName] = useState(""); const [phone, setPhone] = useState(""); const [password, setPassword] = useState(""); const [confirm, setConfirm] = useState(""); const [birthDate, setBirthDate] = useState(""); const [certificate, setCertificate] = useState(""); const [bankName, setBankName] = useState("국민은행"); const [bankAccount, setBankAccount] = useState("");
   const register = trpc.phoneAuth.register.useMutation({ onSuccess: async data => { toast.success("회원가입이 완료되었습니다."); await onSuccess(data.sessionToken); }, onError: error => toast.error(error.message) });
   const submit = (event: FormEvent) => { event.preventDefault(); if (password !== confirm) { toast.error("비밀번호 확인이 일치하지 않습니다."); return; } register.mutate({ name, phone, password, accountRole: role, ...(role === "WORKER" ? { birthDate, certificate, bankName, bankAccount } : {}) }); };
