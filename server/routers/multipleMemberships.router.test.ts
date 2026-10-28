@@ -31,7 +31,7 @@ describe("multiple agency memberships", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("shows recruiting jobs from every agency and marks them directly applicable", async () => {
-    const job = { id: 31, agencyId: 71, title: "철거 보조", status: "RECRUITING" };
+    const job = { id: 31, agencyId: 71, title: "철거 보조", status: "RECRUITING", jobDate: new Date() };
     const agency = { id: 71, name: "새 인력소", region: "청주시" };
     const select = vi.fn()
       .mockReturnValueOnce(selectResult([account()]))
@@ -55,7 +55,7 @@ describe("multiple agency memberships", () => {
     const select = vi.fn()
       .mockReturnValueOnce(selectResult([account()]))
       .mockReturnValueOnce(selectResult([workerProfile()]))
-      .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING" }]))
+      .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING", jobDate: new Date() }]))
       .mockReturnValueOnce(selectResult([{ value: 0 }]))
       .mockReturnValueOnce(selectResult([]))
       .mockReturnValueOnce(selectResult([]))
@@ -72,7 +72,7 @@ describe("multiple agency memberships", () => {
     const select = vi.fn()
       .mockReturnValueOnce(selectResult([account()]))
       .mockReturnValueOnce(selectResult([workerProfile()]))
-      .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING" }]))
+      .mockReturnValueOnce(selectResult([{ id: 31, agencyId: 71, status: "RECRUITING", jobDate: new Date() }]))
       .mockReturnValueOnce(selectResult([{ value: 0 }]))
       .mockReturnValueOnce(selectResult([{ id: 90, jobId: 31, workerId: 21, status: "PENDING" }]));
     mocks.getDb.mockResolvedValue({ select, insert: vi.fn() });

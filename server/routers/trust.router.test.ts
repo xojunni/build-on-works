@@ -73,7 +73,7 @@ describe("trust review routes", () => {
     const select = vi.fn()
       .mockReturnValueOnce(chain([worker]))
       .mockReturnValueOnce(chain([{ id: 20, userId: 2 }]))
-      .mockReturnValueOnce(chain([{ id: 40, status: "RECRUITING", requiredWorkers: 2 }]))
+      .mockReturnValueOnce(chain([{ id: 40, status: "RECRUITING", requiredWorkers: 2, jobDate: now }]))
       .mockReturnValueOnce(chain([{ value: 0 }]))
       .mockReturnValueOnce(chain([]))
       .mockReturnValueOnce(chain([]))

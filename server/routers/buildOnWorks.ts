@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, count, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   agencies,
@@ -22,6 +22,7 @@ import { makeRequest, type GeocodingResult } from "../_core/map";
 import { verifyWorksiteGeofence } from "../geofence";
 import { koreanWorkDate } from "../attendanceDate";
 import { summarizeAgencyTrust, summarizeWorkerTrust } from "../trust";
+import { jobLifecycle, jobListCutoff } from "../jobLifecycle";
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜 형식이 올바르지 않습니다.");
 const coordinateInput = {
@@ -203,7 +204,7 @@ export const buildOnWorksRouter = router({
         if (!agency) return { role: "MANAGER" as const, needsAgency: true, agency: null, metrics: null };
         const [activeWorkers] = await db.select({ value: count() }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.agencyId, agency.id), eq(workerAgencyMemberships.status, "ACTIVE")));
         const [pendingMembers] = await db.select({ value: count() }).from(workerAgencyMemberships).where(and(eq(workerAgencyMemberships.agencyId, agency.id), eq(workerAgencyMemberships.status, "PENDING")));
-        const [activeJobs] = await db.select({ value: count() }).from(jobs).where(and(eq(jobs.agencyId, agency.id), eq(jobs.status, "RECRUITING")));
+        const [activeJobs] = await db.select({ value: count() }).from(jobs).where(and(eq(jobs.agencyId, agency.id), eq(jobs.status, "RECRUITING"), gte(jobs.jobDate, koreanWorkDate())));
         const [paidThisMonth] = await db.select({ value: sql<number>`coalesce(sum(${paymentRecords.amount}), 0)` }).from(paymentRecords).where(and(eq(paymentRecords.agencyId, agency.id), eq(paymentRecords.status, "PAID")));
         return {
           role: "MANAGER" as const,
@@ -295,19 +296,22 @@ export const buildOnWorksRouter = router({
     managerList: protectedProcedure.query(async ({ ctx }) => {
       const { db, agency } = await managerContext(ctx.user.id);
       if (!agency) return [];
-      const rows = await db.select().from(jobs).where(eq(jobs.agencyId, agency.id)).orderBy(desc(jobs.jobDate));
-      return Promise.all(rows.map(async job => ({ ...job, assignedCount: await assignmentCapacity(db, job.id) })));
+      const now = new Date();
+      const rows = await db.select().from(jobs).where(and(eq(jobs.agencyId, agency.id), gt(jobs.jobDate, jobListCutoff(now)))).orderBy(desc(jobs.jobDate));
+      return Promise.all(rows.filter(job => !jobLifecycle(job.jobDate, now).hideFromListings).map(async job => ({ ...job, isPast: jobLifecycle(job.jobDate, now).isPast, assignedCount: await assignmentCapacity(db, job.id) })));
     }),
     discover: protectedProcedure.input(z.object({ region: z.string().trim().optional(), agencyId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
       const { db, profile } = await workerContext(ctx.user.id);
       const trust = await workerTrustSummary(db, profile.id);
-      const filters = [eq(jobs.status, "RECRUITING")];
+      const now = new Date();
+      const filters = [eq(jobs.status, "RECRUITING"), isNull(agencies.deletedAt), gt(jobs.jobDate, jobListCutoff(now))];
       if (input?.region) filters.push(eq(jobs.region, input.region));
       if (input?.agencyId) filters.push(eq(jobs.agencyId, input.agencyId));
       const rows = await db.select({ job: jobs, agency: agencies }).from(jobs).innerJoin(agencies, eq(jobs.agencyId, agencies.id)).where(and(...filters)).orderBy(jobs.jobDate);
       const assignments = await db.select().from(jobAssignments).where(eq(jobAssignments.workerId, profile.id));
-      return Promise.all(rows.map(async row => {
-        return { ...row, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, canApply: !trust.isApplicationBanned, applicationBanUntil: trust.applicationBanUntil, assignedCount: await assignmentCapacity(db, row.job.id) };
+      return Promise.all(rows.filter(row => !jobLifecycle(row.job.jobDate, now).hideFromListings).map(async row => {
+        const isPast = jobLifecycle(row.job.jobDate, now).isPast;
+        return { ...row, isPast, assignment: assignments.find(item => item.jobId === row.job.id) ?? null, canApply: !isPast && !trust.isApplicationBanned, applicationBanUntil: trust.applicationBanUntil, assignedCount: await assignmentCapacity(db, row.job.id) };
       }));
     }),
     workerAssignments: protectedProcedure.query(async ({ ctx }) => {
@@ -341,6 +345,7 @@ export const buildOnWorksRouter = router({
       const { db, profile } = await workerContext(ctx.user.id);
       const [job] = await db.select().from(jobs).where(and(eq(jobs.id, input.jobId), eq(jobs.status, "RECRUITING"))).limit(1);
       if (!job) throw missing("모집 중인 일감을 찾을 수 없습니다.");
+      if (jobLifecycle(job.jobDate).isPast) throw invalid("날짜가 지난 일감은 신청할 수 없습니다.");
       if ((await assignmentCapacity(db, job.id)) >= job.requiredWorkers) throw invalid("모집 인원이 모두 찼습니다.");
       const [existing] = await db.select().from(jobAssignments).where(and(eq(jobAssignments.jobId, job.id), eq(jobAssignments.workerId, profile.id))).limit(1);
       if (existing) throw invalid("이미 신청했거나 처리된 일감입니다.");
@@ -381,6 +386,26 @@ export const buildOnWorksRouter = router({
     mine: protectedProcedure.query(async ({ ctx }) => {
       const { db, profile } = await workerContext(ctx.user.id);
       return workerTrustSummary(db, profile.id);
+    }),
+    blacklistedWorkers: protectedProcedure.query(async ({ ctx }) => {
+      const { db, agency } = await managerContext(ctx.user.id);
+      if (!agency) return [];
+      // Only candidates/members already related to this manager may be disclosed.
+      const [memberships, applications] = await Promise.all([
+        db.select({ workerId: workerAgencyMemberships.workerId }).from(workerAgencyMemberships).where(eq(workerAgencyMemberships.agencyId, agency.id)),
+        db.select({ workerId: jobAssignments.workerId }).from(jobAssignments).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).where(eq(jobs.agencyId, agency.id)),
+      ]);
+      const ids = Array.from(new Set([...memberships, ...applications].map(item => item.workerId)));
+      if (!ids.length) return [];
+      const rows = await db.select({ profile: workerProfiles, user: users }).from(workerProfiles).innerJoin(users, eq(workerProfiles.userId, users.id)).where(inArray(workerProfiles.id, ids));
+      const candidates = await Promise.all(rows.map(async row => ({ ...toManagerWorkerDetail(row), trust: await workerTrustSummary(db, row.profile.id) })));
+      return Promise.all(candidates.filter(row => row.trust.isBlacklisted).map(async row => {
+        // Archived jobs remain in the DB; their no-show evidence never disappears.
+        const reports = await db.select({ id: noShowReports.id, reportedAt: noShowReports.reportedAt, jobTitle: jobs.title, jobDate: jobs.jobDate, agencyName: agencies.name })
+          .from(noShowReports).innerJoin(jobAssignments, eq(noShowReports.assignmentId, jobAssignments.id)).innerJoin(jobs, eq(jobAssignments.jobId, jobs.id)).innerJoin(agencies, eq(noShowReports.agencyId, agencies.id))
+          .where(eq(noShowReports.workerId, row.profile.id)).orderBy(desc(noShowReports.reportedAt));
+        return { ...row, trust: { ...row.trust, reports } };
+      }));
     }),
     workerSummary: protectedProcedure.input(z.object({ workerId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       const { db, agency } = await managerContext(ctx.user.id);
